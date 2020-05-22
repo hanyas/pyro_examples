@@ -1,6 +1,9 @@
 import torch
 from torch.distributions import Gamma
 
+from pyro.distributions.constraints import corr_cholesky_constraint
+from pyro.distributions.constraints import positive
+
 import torch.nn.functional as F
 
 import matplotlib.pyplot as plt
@@ -45,6 +48,7 @@ def model(data, **kwargs):
     with pyro.plate("prec_plate", T * D):
         prec = pyro.sample("prec", Gamma(zeta, delta))
 
+    corr_chol = torch.zeros(T, D, D)
     for t in pyro.plate("corr_chol_plate", T):
         corr_chol[t, ...] = pyro.sample("corr_chol_{}".format(t), LKJCorrCholesky(d=D, eta=torch.ones(1, device=device)))
 
@@ -59,12 +63,10 @@ def model(data, **kwargs):
 
 
 def guide(data, **kwargs):
-    gamma = pyro.param('gamma', alpha * torch.ones(T - 1, device=device), constraint=constraints.positive)
+    gamma = pyro.param('gamma', alpha * torch.ones(T - 1, device=device), constraint=positive)
 
-    zeta = pyro.param('zeta', lambda: Uniform(1., 2.).sample([T * D]).to(device),  constraint=constraints.positive)
-    delta = pyro.param('delta', lambda: Uniform(1., 2.).sample([T * D]).to(device), constraint=constraints.positive)
-
-    psi = pyro.param('psi', lambda: Uniform(1., 2.).sample([T]).to(device), constraint=constraints.positive)
+    zeta = pyro.param('zeta', lambda: Uniform(1., 2.).sample([T * D]).to(device),  constraint=positive)
+    delta = pyro.param('delta', lambda: Uniform(1., 2.).sample([T * D]).to(device), constraint=positive)
 
     tau = pyro.param('tau', lambda: MultivariateNormal(torch.zeros(D), 10 * torch.eye(2)).sample([T]).to(device))
     pi = pyro.param('pi', torch.ones(N, T, device=device) / T, constraint=constraints.simplex)
@@ -75,9 +77,12 @@ def guide(data, **kwargs):
     with pyro.plate("prec_plate", T * D):
         q_prec = pyro.sample("prec", Gamma(zeta, delta))
 
-    q_corr_chol = torch.zeros(T, D, D, device=device)
+    _corr_chol = torch.zeros(T, D, D)
+    q_corr_chol = torch.zeros(T, D, D)
     for t in pyro.plate("corr_chol_plate", T):
-        q_corr_chol[t, ...] = pyro.sample("corr_chol_{}".format(t), LKJCorrCholesky(d=D, eta=psi[t]))
+        _psi = LKJCorrCholesky(d=D, eta=torch.ones(1)).sample().to(device)
+        _corr_chol[t, ...] = pyro.param("_corr_chol_{}".format(t), _psi, constraint=corr_cholesky_constraint)
+        q_corr_chol[t, ...] = pyro.sample("corr_chol_{}".format(t), Delta(_corr_chol[t, ...]).to_event(1).to_event(1))
 
     with pyro.plate("mu_plate", T):
         _q_std = torch.sqrt(1. / q_prec.view(-1, D))
@@ -91,7 +96,7 @@ def guide(data, **kwargs):
 T = 5
 
 optim = Adam({"lr": 0.01})
-svi = SVI(model, guide, optim, loss=Trace_ELBO(num_particles=35))
+svi = SVI(model, guide, optim, loss=Trace_ELBO(num_particles=15))
 
 
 def train(num_iterations):

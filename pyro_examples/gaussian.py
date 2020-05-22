@@ -13,6 +13,7 @@ from pyro.infer import SVI, Trace_ELBO, Predictive
 assert pyro.__version__.startswith('1')
 pyro.enable_validation(True)
 pyro.set_rng_seed(1337)
+torch.set_num_threads(1)
 
 
 N, D = 250, 2
